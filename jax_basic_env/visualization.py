@@ -3,7 +3,9 @@ import numpy as np
 from pathlib import Path
 from typing import Union, Sequence, Dict, Tuple
 import networkx as nx
-from env_core import EnvState
+from env_core import EnvState, MicroserviceEnvConfig, MicroserviceEnv
+import jax
+import jax.numpy as jnp
 
 
 class EnvVisualizer:
@@ -19,8 +21,11 @@ class EnvVisualizer:
         self.edge_color = "#CCCCCC"
         self.bar_bg_color = "#F5F5F5"
         self.bar_fill_color = "#4CAF50"
-        
-        # Service color palette (for different service types)
+        self.running_service_color = "#64B5F6"
+        self.idle_service_color = "#D3D3D3"
+        self.moved_service_color = "#FFB74D"
+
+        # Service color palette (kept for potential future use)
         self.service_colors = [
             "#E57373", "#F06292", "#BA68C8", "#9575CD", "#7986CB", 
             "#64B5F6", "#4FC3F7", "#4DD0E1", "#4DB6AC", "#81C784", 
@@ -98,6 +103,7 @@ class EnvVisualizer:
             cpu_capacity = state.agents_capacity[agent_id]
             running_services = np.array(state.ms_running[agent_id])
             active_services = np.array(state.ms_active[agent_id])
+            moved_services = np.array(state.ms_moved[agent_id])
             ms_cpu = np.array(state.ms_cpu)
             
             # Calculate CPU usage from running services
@@ -165,25 +171,30 @@ class EnvVisualizer:
                     ms_x = x + orbit_radius * np.cos(angle)
                     ms_y = y + orbit_radius * np.sin(angle)
                     
-                    # Service color
-                    service_color = self.service_colors[ms_id % len(self.service_colors)]
-                    
-                    # Check if the service is running
+                    # Determine service color based on state
                     is_running = running_services[ms_id] == 1
+                    was_moved = moved_services[ms_id] == 1
+
+                    if was_moved:
+                        service_color = self.moved_service_color
+                    elif is_running:
+                        service_color = self.running_service_color
+                    else:
+                        service_color = self.idle_service_color
                     
-                    # Draw service circle with shadow for non-running services
+                    # Draw service circle
                     frame.add(dwg.circle(
                         center=(f"{ms_x}px", f"{ms_y}px"),
                         r=f"{ms_radius}px",
-                        fill=service_color if is_running else "#D3D3D3",  # Gray shadow for non-running
-                        fill_opacity="0.8",  # Slightly transparent
+                        fill=service_color,
+                        fill_opacity="0.9",
                         stroke=self.text_color,
                         stroke_width=f"{1 * self.scale}px"
                     ))
                     
                     # Add service information inside the circle
-                    service_capacity = state.ms_cpu[ms_id]  # Capacity required
-                    steps_remaining = state.ms_time_remaining[agent_id][ms_id]  # Steps remaining
+                    service_capacity = state.ms_cpu[ms_id]
+                    steps_remaining = state.ms_time_remaining[agent_id][ms_id]
                     frame.add(dwg.text(
                         f"S{ms_id}\n{service_capacity}\n{steps_remaining}",
                         insert=(f"{ms_x}px", f"{ms_y}px"),
@@ -249,38 +260,58 @@ class EnvVisualizer:
 
 # Example usage
 if __name__ == "__main__":
-    import jax
-    import jax.numpy as jnp
-    from env_core import MicroserviceEnvConfig, MicroserviceEnv
-    
     config = MicroserviceEnvConfig()
     env = MicroserviceEnv(config)
     key = jax.random.PRNGKey(0)
-    state = env.init(key)
+    
+    # Initialize state
+    init_key, key = jax.random.split(key)
+    state = env.init(init_key)
+    
+    # Spawn some initial services
+    spawn_key, key = jax.random.split(key)
+    state = env._spawn_microservices(state, spawn_key)
     
     visualizer = EnvVisualizer(scale=1.2)
     visualizer.save_svg(state, "environment_init.svg")
     
     # Animation example
     states = [state]
-    run_masks = jnp.ones((config.agents_num, config.ms_num), dtype=jnp.int32)
-    # run only the first service
-    #run_masks = run_masks.at[:, 0].set(1)
+    num_steps = 5
     
-    for i in range(5):
-        state, rewards, key = env.step(state, run_masks, key)
+    for i in range(num_steps):
+        print(f"\n===== STEP {i + 1} =====")
+        
+        # --- Define Actions for this step ---
+        # Default: Run all active services
+        run_masks = state.ms_active 
+        
+        # Default: No moves
+        move_actions = jnp.full((config.agents_num, config.ms_num), -1, dtype=jnp.int32)
+        
+        # Example Move: In step 1, try moving service 0 from agent 0 to agent 1 (if active)
+        if i == 0: 
+            move_actions = move_actions.at[0, 0].set(1) 
+            print("Attempting move: Service 0 from Agent 0 to Agent 1")
+        
+        # Example Move: In step 2, try moving service 2 from agent 3 to agent 5 (if active)
+        if i == 1:
+            move_actions = move_actions.at[3, 2].set(5)
+            print("Attempting move: Service 2 from Agent 3 to Agent 5")
+
+        # --- Step the environment ---
+        step_key, key = jax.random.split(key)
+        state, rewards, _ = env.step(state, run_masks, move_actions, step_key)
         states.append(state)
         
         # Print step details to the console
-        print("\n===== STEP", i + 1, "=====")
         print("Step count:", state.step_count)
         print("Active services:\n", state.ms_active)
-        print("run masks:\n", run_masks)
         print("Running services:\n", state.ms_running)
-        print("CPU requirements per service type:\n", state.ms_cpu)
-        print("Time remaining:\n", state.ms_time_remaining)
+        print("Moved services (mask):\n", state.ms_moved)
         print("Rewards:\n", rewards)
+        print("Service distribution:", jnp.sum(state.ms_active, axis=1))
     
-    visualizer.save_svg_animation(states, "environment_animation.svg", frame_duration_seconds=1.0)
+    visualizer.save_svg_animation(states, "environment_animation.svg", frame_duration_seconds=1.5)
     
-    print("Visualization complete. Check environment_init.svg and environment_animation.svg")
+    print("\nVisualization complete. Check environment_init.svg and environment_animation.svg")
