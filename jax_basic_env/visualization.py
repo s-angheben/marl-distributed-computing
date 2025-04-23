@@ -9,7 +9,8 @@ import jax.numpy as jnp
 
 
 class EnvVisualizer:
-    def __init__(self, scale: float = 1.0):
+    def __init__(self, config: MicroserviceEnvConfig, scale: float = 1.0):
+        self.config = config  # Store the config
         self.scale = scale
         self.node_size = 80 * self.scale
         self.canvas_padding = 80 * self.scale
@@ -120,7 +121,7 @@ class EnvVisualizer:
             
             # Agent ID
             frame.add(dwg.text(
-                f"A{agent_id}",
+                f"A{agent_id}-{self.config.agents_speed[agent_id]}",
                 insert=(x, y - self.node_size / 4),
                 text_anchor="middle",
                 dominant_baseline="middle",
@@ -272,7 +273,7 @@ if __name__ == "__main__":
     spawn_key, key = jax.random.split(key)
     state = env._spawn_microservices(state, spawn_key)
     
-    visualizer = EnvVisualizer(scale=1.2)
+    visualizer = EnvVisualizer(config=config, scale=1.2)
     visualizer.save_svg(state, "environment_init.svg")
     
     # Animation example
